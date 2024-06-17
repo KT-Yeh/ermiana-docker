@@ -1,0 +1,84 @@
+name: Check ermiana Repo for New Commits
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # 每天執行一次
+  workflow_dispatch: # 手動觸發
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check_ermiana_repo:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout ermiana-docker repo
+      uses: actions/checkout@v4
+      with:
+        repository: KT-Yeh/ermiana-docker
+        path: ermiana-docker
+
+    - name: Get latest commit SHA from ermiana repo
+      run: |
+        git clone https://github.com/canaria3406/ermiana.git
+        cd ermiana
+        LATEST_COMMIT_SHA=$(git rev-parse HEAD)
+        echo "LATEST_COMMIT_SHA=$LATEST_COMMIT_SHA" >> $GITHUB_ENV
+
+    - name: Check if commit SHA has changed
+      id: sha-check
+      run: |
+        cd ermiana-docker
+        if [ -f ./latest_commit_sha.txt ]; then
+          OLD_COMMIT_SHA=$(cat ./latest_commit_sha.txt)
+          if [ "$LATEST_COMMIT_SHA" == "$OLD_COMMIT_SHA" ]; then
+            echo "No new commits in ermiana repo."
+            echo "sha_changed=false" >> $GITHUB_ENV
+          else
+            echo "New commit found in ermiana repo."
+            echo $LATEST_COMMIT_SHA > ./latest_commit_sha.txt
+            echo "sha_changed=true" >> $GITHUB_ENV
+          fi
+        else
+          echo "No existing commit SHA found. Creating new file."
+          echo $LATEST_COMMIT_SHA > ./latest_commit_sha.txt
+          echo "sha_changed=true" >> $GITHUB_ENV
+        fi
+
+    - name: Commit and push changes to ermiana-docker repo
+      if: env.sha_changed == 'true'
+      run: |
+        cd ermiana-docker
+        git config --global user.name 'github-actions'
+        git config --global user.email 'github-actions@github.com'
+        git add ./latest_commit_sha.txt
+        git commit -m "Update latest commit SHA from ermiana repo"
+        git push
+
+    - name: Copy Dockerfile to ermiana repo
+      if: env.sha_changed == 'true'
+      run: |
+        cp ermiana-docker/Dockerfile ermiana/
+
+    - name: Login ghcr.io
+      if: env.sha_changed == 'true'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build & Push Docker image
+      if: env.sha_changed == 'true'
+      uses: docker/build-push-action@v5
+      with:
+        context: ermiana
+        platforms: linux/amd64
+        push: true
+        tags: ghcr.io/kt-yeh/ermiana-docker:latest
